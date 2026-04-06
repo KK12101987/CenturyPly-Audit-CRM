@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 from flask import Flask, render_template, request, send_file
+from werkzeug.utils import secure_filename
 from pathlib import Path
-import sqlite3, re
+import sqlite3, re, os
 
 BASE = Path(__file__).parent
 DB = BASE / "centuryply_audit.db"
@@ -55,15 +56,20 @@ def upload_audit_history():
     if request.method == 'GET':
         return render_template('upload_audit_history.html')
 
+    if 'file' not in request.files:
+        return render_template('upload_audit_history.html', error="No file part in request")
+        
     f = request.files.get('file')
-    if not f:
-        return render_template('upload_audit_history.html',
-                               error="No file selected")
+    if not f or f.filename == '':
+        return render_template('upload_audit_history.html', error="No file selected")
 
-    save_to = BASE / "uploads" / "uploaded_audits" / f.filename
-    f.save(str(save_to))
-    return render_template('upload_audit_history.html',
-                           success="File uploaded successfully!")
+    # Sanitize filename and ensure directory exists
+    safe_name = secure_filename(f.filename)
+    save_dir = BASE / "uploads" / "uploaded_audits"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    f.save(str(save_dir / safe_name))
+    return render_template('upload_audit_history.html', success="File uploaded successfully!")
 
 @app.route('/bulk_update', methods=['GET','POST'])
 def bulk_update():
@@ -74,11 +80,14 @@ def run_legacy():
     import subprocess, sys
     script = BASE / "legacy" / "run_legacy_example.py"
     try:
+        # Added check=True to raise exception on script failure
         proc = subprocess.run([sys.executable, str(script)],
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, text=True, timeout=30, check=True)
         out = proc.stdout + "\n" + proc.stderr
+    except subprocess.CalledProcessError as e:
+        out = f"Legacy script failed with code {e.returncode}.\nError details: {e.stderr}"
     except Exception as e:
-        out = str(e)
+        out = f"System error: {str(e)}"
 
     return render_template('legacy_output.html', output=out)
 
@@ -90,11 +99,17 @@ def generate_report_from_db():
     import pandas as pd
     conn = sqlite3.connect(DB)
     df = pd.read_sql_query("SELECT * FROM qa_logs", conn)
+    conn.close()
 
-    out = BASE / "reports" / f"CenturyPly_QA_Report_{auditor.replace(' ','_')}.pdf"
-    generate_full_pdf(df, out, auditor)
+    # Ensure reports directory exists and sanitize the filename
+    safe_auditor_name = secure_filename(auditor.replace(' ', '_'))
+    out_dir = BASE / "reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    out_path = out_dir / f"CenturyPly_QA_Report_{safe_auditor_name}.pdf"
+    generate_full_pdf(df, out_path, auditor)
 
-    return send_file(str(out), as_attachment=True)
+    return send_file(str(out_path), as_attachment=True)
 
 # MAIN ------------------------------------------------------------
 if __name__ == '__main__':
